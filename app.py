@@ -162,8 +162,30 @@ def server(input, output, session):
     def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         """Handle multi-index and transpose dataframe"""
         if isinstance(df.columns, pd.MultiIndex):
+            # Deduplicate multi-index columns by taking mean
             df = df.groupby(level=list(range(df.columns.nlevels)), axis=1).mean()
+        # Ensure we have a proper DataFrame
+        if not isinstance(df, pd.DataFrame):
+            df = pd.DataFrame(df)
         return df.T
+
+    def load_phosphoproteomics(data) -> Optional[pd.DataFrame]:
+        """Load phosphoproteomics data with fallback to multiple sources"""
+        sources = ['harmonized', 'broad', 'mssm', 'washu', None]
+
+        for source in sources:
+            try:
+                if source:
+                    phospho_raw = data.get_phosphoproteomics(source=source)
+                else:
+                    phospho_raw = data.get_phosphoproteomics()
+
+                if phospho_raw is not None and not phospho_raw.empty:
+                    return phospho_raw
+            except (AttributeError, ValueError, KeyError, Exception):
+                continue
+
+        return None
 
     def get_tumor_normal_pairs(columns: List[str]) -> Tuple[List[str], List[str], List[str], List[str]]:
         """
@@ -260,8 +282,13 @@ def server(input, output, session):
         try:
             data = load_cancer_data(cancer)
 
-            # Load phospho data
-            phospho_raw = data.get_phosphoproteomics(source='harmonized')
+            # Load phospho data with fallback sources
+            phospho_raw = load_phosphoproteomics(data)
+
+            if phospho_raw is None:
+                print(f"No phosphoproteomics data available for {cancer}")
+                return None
+
             phospho_processed = process_dataframe(phospho_raw)
 
             # Store based on normalization preference
@@ -308,8 +335,10 @@ def server(input, output, session):
 
             # Load phospho if needed
             if data_type in ['phospho', 'both']:
-                phospho = process_dataframe(data.get_phosphoproteomics(source='harmonized'))
-                result['phospho'] = phospho
+                phospho_raw = load_phosphoproteomics(data)
+
+                if phospho_raw is not None:
+                    result['phospho'] = process_dataframe(phospho_raw)
 
             return result
         except Exception as e:
@@ -341,6 +370,11 @@ def server(input, output, session):
                 # Format phosphosites as readable strings
                 phosphosites = sorted([str(idx) for idx in phospho.index])
                 ui.update_selectize("phospho_query", choices=phosphosites)
+            else:
+                ui.update_selectize("phospho_query", choices=[])
+        else:
+            # No phospho data available for this cancer type
+            ui.update_selectize("phospho_query", choices=[])
 
     @reactive.Effect
     def update_correlation_choices():
@@ -501,7 +535,8 @@ def server(input, output, session):
         try:
             data = phospho_data()
             if data is None:
-                phospho_results.set(pd.DataFrame({'error': ['Failed to load cancer data']}))
+                cancer_name = CANCER_TYPES.get(input.phospho_cancer(), input.phospho_cancer())
+                phospho_results.set(pd.DataFrame({'error': [f'No phosphoproteomics data available for {cancer_name}. Try a different cancer type.']}))
                 return
 
             # Get the appropriate phospho data
