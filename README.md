@@ -36,13 +36,74 @@ Python Shiny GUI for browsing and analyzing CPTAC proteomics data. This applicat
 
 ## Installation
 
+### Option 1: Docker (Recommended)
+
+Docker provides an isolated, reproducible environment for running the application.
+
+#### Build the Docker Image
+
 ```bash
-pip install -r requirements.txt
+docker build -t cptac-browser .
 ```
 
-## Running the Application
+#### Run the Container
+
+**Basic usage:**
+```bash
+docker run -p 8000:8000 cptac-browser
+```
+
+**With persistent data cache (recommended):**
+```bash
+docker run -p 8000:8000 -v cptac-data:/root/.cptac cptac-browser
+```
+
+This creates a named volume `cptac-data` that persists CPTAC datasets between container restarts, significantly speeding up subsequent launches.
+
+**Run in background (detached mode):**
+```bash
+docker run -d -p 8000:8000 -v cptac-data:/root/.cptac --name cptac-browser cptac-browser
+```
+
+**Stop the container:**
+```bash
+docker stop cptac-browser
+```
+
+**View logs:**
+```bash
+docker logs cptac-browser
+```
+
+**Remove the container:**
+```bash
+docker rm cptac-browser
+```
+
+Then open your browser to `http://localhost:8000`
+
+#### Docker Compose (Alternative)
+
+For easier management, use Docker Compose:
 
 ```bash
+# Start the application
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the application
+docker-compose down
+
+# Stop and remove volumes (clears cache)
+docker-compose down -v
+```
+
+### Option 2: Local Python Installation
+
+```bash
+pip install -r requirements.txt
 shiny run app.py
 ```
 
@@ -78,3 +139,48 @@ This application uses the [CPTAC Python library](https://github.com/PayneLab/cpt
 ## Based on ProteomicsMCP
 
 This GUI recreates the analysis tools from [ProteomicsMCP](https://github.com/plutzer/ProteomicsMCP) in an interactive web interface with Plotly visualizations.
+
+## Docker Tips
+
+### Persistent Data Storage
+
+The CPTAC library downloads large dataset files on first use. To avoid re-downloading:
+
+1. **Named volume (recommended):** `-v cptac-data:/root/.cptac`
+2. **Bind mount to local directory:**
+   ```bash
+   mkdir -p ./cptac_cache
+   docker run -p 8000:8000 -v ./cptac_cache:/root/.cptac cptac-browser
+   ```
+
+### Resource Allocation
+
+For large datasets, you may want to increase Docker's memory allocation:
+
+```bash
+docker run -p 8000:8000 -m 4g -v cptac-data:/root/.cptac cptac-browser
+```
+
+### Troubleshooting
+
+**Port already in use:**
+```bash
+# Use a different port
+docker run -p 8080:8000 cptac-browser
+# Then access at http://localhost:8080
+```
+
+**Container won't start:**
+```bash
+# Check logs
+docker logs cptac-browser
+
+# Run interactively to see errors
+docker run -it -p 8000:8000 cptac-browser
+```
+
+**Clear cache and restart:**
+```bash
+docker-compose down -v
+docker-compose up -d
+```
