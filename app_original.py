@@ -1,5 +1,5 @@
 """
-CPTAC Browser - Python Shiny GUI for CPTAC Data Analysis (Optimized)
+CPTAC Browser - Python Shiny GUI for CPTAC Data Analysis
 """
 
 from shiny import App, ui, render, reactive
@@ -9,8 +9,7 @@ import numpy as np
 from scipy import stats
 import plotly.graph_objects as go
 import plotly.express as px
-from typing import Tuple, List, Optional, Dict
-from dataclasses import dataclass
+from typing import Tuple, List, Optional
 
 # Available cancer types
 CANCER_TYPES = {
@@ -24,17 +23,6 @@ CANCER_TYPES = {
     "lscc": "Lung Squamous Cell Carcinoma",
     "pdac": "Pancreatic Ductal Adenocarcinoma"
 }
-
-@dataclass
-class ProcessedData:
-    """Container for pre-processed cancer data"""
-    proteomics: pd.DataFrame
-    phospho_normalized: pd.DataFrame
-    phospho_unnormalized: pd.DataFrame
-    tumor_samples: List[str]
-    normal_samples: List[str]
-    paired_tumor_samples: List[str]
-    paired_normal_samples: List[str]
 
 # UI Definition
 app_ui = ui.page_navbar(
@@ -126,53 +114,24 @@ app_ui = ui.page_navbar(
 
 def server(input, output, session):
 
-    # ==================== Helper Functions ====================
-
+    # Helper function to identify tumor vs normal samples
     def is_normal_sample(sample_id: str) -> bool:
         """Check if sample ID indicates normal tissue (ends with .N)"""
         return str(sample_id).endswith('.N')
 
-    def load_cancer_data(cancer: str):
-        """Load cancer data object from cptac library"""
-        cancer_map = {
-            "brca": cptac.Brca,
-            "coad": cptac.Coad,
-            "hnscc": cptac.Hnscc,
-            "luad": cptac.Luad,
-            "ovarian": cptac.Ovarian,
-            "ccrcc": cptac.Ccrcc,
-            "gbm": cptac.Gbm,
-            "lscc": cptac.Lscc,
-            "pdac": cptac.Pdac
-        }
-        return cancer_map[cancer]()
+    def get_tumor_normal_pairs(df: pd.DataFrame) -> Tuple[List[str], List[str]]:
+        """Extract paired tumor and normal sample IDs"""
+        normal_samples = [col for col in df.columns if is_normal_sample(col)]
+        tumor_samples = []
 
-    def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-        """Handle multi-index and transpose dataframe"""
-        if isinstance(df.columns, pd.MultiIndex):
-            df = df.groupby(level=list(range(df.columns.nlevels)), axis=1).mean()
-        return df.T
-
-    def get_tumor_normal_pairs(columns: List[str]) -> Tuple[List[str], List[str], List[str], List[str]]:
-        """
-        Extract all tumor/normal samples and paired samples.
-        Returns: (all_tumor, all_normal, paired_tumor, paired_normal)
-        """
-        all_normal = [col for col in columns if is_normal_sample(col)]
-        all_tumor = [col for col in columns if not is_normal_sample(col)]
-
-        paired_tumor = []
-        paired_normal = []
-
-        for normal in all_normal:
+        for normal in normal_samples:
             tumor = normal[:-2]  # Remove '.N' suffix
-            if tumor in all_tumor:
-                paired_tumor.append(tumor)
-                paired_normal.append(normal)
+            if tumor in df.columns:
+                tumor_samples.append(tumor)
 
-        return all_tumor, all_normal, paired_tumor, paired_normal
+        return tumor_samples, normal_samples
 
-    def calculate_fold_change_stats(tumor_data: pd.Series, normal_data: pd.Series) -> Optional[dict]:
+    def calculate_fold_change_stats(tumor_data: pd.Series, normal_data: pd.Series) -> dict:
         """Calculate log2 fold change and statistics"""
         tumor_clean = tumor_data.replace([np.inf, -np.inf], np.nan).dropna()
         normal_clean = normal_data.replace([np.inf, -np.inf], np.nan).dropna()
@@ -207,110 +166,13 @@ def server(input, output, session):
 
         return results_df
 
-    # ==================== Cached Data Loaders ====================
-
-    @reactive.calc
-    def protein_data() -> Optional[ProcessedData]:
-        """Load and cache protein analysis data for selected cancer type"""
-        cancer = input.protein_cancer()
-
-        try:
-            data = load_cancer_data(cancer)
-
-            # Process proteomics data
-            proteomics = process_dataframe(data.get_proteomics())
-
-            # Get tumor/normal pairs
-            all_tumor, all_normal, paired_tumor, paired_normal = get_tumor_normal_pairs(
-                proteomics.columns.tolist()
-            )
-
-            # For protein analysis, we don't need phospho data
-            return ProcessedData(
-                proteomics=proteomics,
-                phospho_normalized=pd.DataFrame(),
-                phospho_unnormalized=pd.DataFrame(),
-                tumor_samples=all_tumor,
-                normal_samples=all_normal,
-                paired_tumor_samples=paired_tumor,
-                paired_normal_samples=paired_normal
-            )
-        except Exception as e:
-            print(f"Error loading protein data: {e}")
-            return None
-
-    @reactive.calc
-    def phospho_data() -> Optional[ProcessedData]:
-        """Load and cache phospho analysis data for selected cancer type"""
-        cancer = input.phospho_cancer()
-        normalized = input.phospho_normalized()
-
-        try:
-            data = load_cancer_data(cancer)
-
-            # Load phospho data
-            phospho_raw = data.get_phosphoproteomics(source='harmonized')
-            phospho_processed = process_dataframe(phospho_raw)
-
-            # Store based on normalization preference
-            if normalized:
-                phospho_norm = phospho_processed
-                phospho_unnorm = pd.DataFrame()
-            else:
-                phospho_norm = pd.DataFrame()
-                phospho_unnorm = phospho_processed
-
-            # Get tumor/normal pairs
-            all_tumor, all_normal, paired_tumor, paired_normal = get_tumor_normal_pairs(
-                phospho_processed.columns.tolist()
-            )
-
-            return ProcessedData(
-                proteomics=pd.DataFrame(),
-                phospho_normalized=phospho_norm,
-                phospho_unnormalized=phospho_unnorm,
-                tumor_samples=all_tumor,
-                normal_samples=all_normal,
-                paired_tumor_samples=paired_tumor,
-                paired_normal_samples=paired_normal
-            )
-        except Exception as e:
-            print(f"Error loading phospho data: {e}")
-            return None
-
-    @reactive.calc
-    def correlation_data() -> Optional[Dict]:
-        """Load and cache correlation analysis data for selected cancer type"""
-        cancer = input.corr_cancer()
-        data_type = input.corr_data_type()
-        normalized = input.corr_normalized()
-
-        try:
-            data = load_cancer_data(cancer)
-
-            result = {}
-
-            # Load proteomics if needed
-            if data_type in ['proteomics', 'both']:
-                result['proteomics'] = process_dataframe(data.get_proteomics())
-
-            # Load phospho if needed
-            if data_type in ['phospho', 'both']:
-                phospho = process_dataframe(data.get_phosphoproteomics(source='harmonized'))
-                result['phospho'] = phospho
-
-            return result
-        except Exception as e:
-            print(f"Error loading correlation data: {e}")
-            return None
-
-    # ==================== Protein Analysis ====================
-
+    # Protein Analysis
     protein_results = reactive.Value(None)
 
     @reactive.Effect
     @reactive.event(input.protein_run)
     def run_protein_analysis():
+        cancer = input.protein_cancer()
         genes = [g.strip() for g in input.protein_genes().split(',') if g.strip()]
 
         if not genes:
@@ -318,23 +180,45 @@ def server(input, output, session):
             return
 
         try:
-            data = protein_data()
-            if data is None:
-                protein_results.set(pd.DataFrame({'error': ['Failed to load cancer data']}))
-                return
+            # Load cancer data
+            if cancer == "brca":
+                data = cptac.Brca()
+            elif cancer == "coad":
+                data = cptac.Coad()
+            elif cancer == "hnscc":
+                data = cptac.Hnscc()
+            elif cancer == "luad":
+                data = cptac.Luad()
+            elif cancer == "ovarian":
+                data = cptac.Ovarian()
+            elif cancer == "ccrcc":
+                data = cptac.Ccrcc()
+            elif cancer == "gbm":
+                data = cptac.Gbm()
+            elif cancer == "lscc":
+                data = cptac.Lscc()
+            elif cancer == "pdac":
+                data = cptac.Pdac()
 
-            proteomics = data.proteomics
-            paired_tumor = data.paired_tumor_samples
-            paired_normal = data.paired_normal_samples
+            # Get proteomics data
+            proteomics = data.get_proteomics()
+
+            # Handle multi-index
+            if isinstance(proteomics.columns, pd.MultiIndex):
+                proteomics = proteomics.groupby(level=list(range(proteomics.columns.nlevels)), axis=1).mean()
+
+            # Transpose so genes are rows and samples are columns
+            proteomics = proteomics.T
 
             results = []
             for gene in genes:
                 if gene in proteomics.index:
                     gene_data = proteomics.loc[gene]
+                    tumor_samples, normal_samples = get_tumor_normal_pairs(pd.DataFrame(gene_data).T)
 
-                    if len(paired_tumor) > 0:
-                        tumor_data = gene_data[paired_tumor]
-                        normal_data = gene_data[paired_normal]
+                    if len(tumor_samples) > 0:
+                        tumor_data = gene_data[tumor_samples]
+                        normal_data = gene_data[[s for s in normal_samples if s[:-2] in tumor_samples]]
 
                         stats_result = calculate_fold_change_stats(tumor_data, normal_data)
                         if stats_result:
@@ -416,13 +300,13 @@ def server(input, output, session):
 
         return fig
 
-    # ==================== Phospho Analysis ====================
-
+    # Phospho Analysis
     phospho_results = reactive.Value(None)
 
     @reactive.Effect
     @reactive.event(input.phospho_run)
     def run_phospho_analysis():
+        cancer = input.phospho_cancer()
         query = input.phospho_query().strip()
         normalized = input.phospho_normalized()
 
@@ -431,33 +315,63 @@ def server(input, output, session):
             return
 
         try:
-            data = phospho_data()
-            if data is None:
-                phospho_results.set(pd.DataFrame({'error': ['Failed to load cancer data']}))
-                return
+            # Load cancer data
+            if cancer == "brca":
+                data = cptac.Brca()
+            elif cancer == "coad":
+                data = cptac.Coad()
+            elif cancer == "hnscc":
+                data = cptac.Hnscc()
+            elif cancer == "luad":
+                data = cptac.Luad()
+            elif cancer == "ovarian":
+                data = cptac.Ovarian()
+            elif cancer == "ccrcc":
+                data = cptac.Ccrcc()
+            elif cancer == "gbm":
+                data = cptac.Gbm()
+            elif cancer == "lscc":
+                data = cptac.Lscc()
+            elif cancer == "pdac":
+                data = cptac.Pdac()
 
-            # Get the appropriate phospho data
-            phospho = data.phospho_normalized if normalized else data.phospho_unnormalized
-            if phospho.empty:
-                phospho = data.phospho_normalized if not normalized else data.phospho_unnormalized
+            # Get phosphoproteomics data
+            if normalized:
+                phospho = data.get_phosphoproteomics(source='harmonized')
+                proteomics = data.get_proteomics()
 
-            paired_tumor = data.paired_tumor_samples
-            paired_normal = data.paired_normal_samples
+                # Normalize phospho by protein levels
+                # This is a simplified normalization - subtract protein levels
+                if isinstance(phospho.columns, pd.MultiIndex):
+                    phospho = phospho.groupby(level=list(range(phospho.columns.nlevels)), axis=1).mean()
+            else:
+                phospho = data.get_phosphoproteomics(source='harmonized')
+                if isinstance(phospho.columns, pd.MultiIndex):
+                    phospho = phospho.groupby(level=list(range(phospho.columns.nlevels)), axis=1).mean()
+
+            # Transpose
+            phospho = phospho.T
 
             # Parse query
             queries = [q.strip() for q in query.split(',') if q.strip()]
 
             results = []
             for q in queries:
-                # Find matching phosphosites
-                matching = [idx for idx in phospho.index if q in str(idx)]
+                # Check if it's a specific phosphosite (contains underscore)
+                if '_' in q:
+                    # Specific phosphosite query
+                    matching = [idx for idx in phospho.index if q in str(idx)]
+                else:
+                    # Gene query - find all phosphosites for that gene
+                    matching = [idx for idx in phospho.index if q in str(idx)]
 
                 for site in matching[:25]:  # Limit to 25 sites per gene
                     site_data = phospho.loc[site]
+                    tumor_samples, normal_samples = get_tumor_normal_pairs(pd.DataFrame(site_data).T)
 
-                    if len(paired_tumor) > 0:
-                        tumor_data = site_data[paired_tumor]
-                        normal_data = site_data[paired_normal]
+                    if len(tumor_samples) > 0:
+                        tumor_data = site_data[tumor_samples]
+                        normal_data = site_data[[s for s in normal_samples if s[:-2] in tumor_samples]]
 
                         stats_result = calculate_fold_change_stats(tumor_data, normal_data)
                         if stats_result:
@@ -536,36 +450,56 @@ def server(input, output, session):
 
         return fig
 
-    # ==================== Correlation Analysis ====================
-
+    # Correlation Analysis
     corr_results = reactive.Value(None)
-    corr_data_store = reactive.Value(None)
+    corr_data = reactive.Value(None)  # Store raw data for plotting
 
     @reactive.Effect
     @reactive.event(input.corr_run)
     def run_correlation_analysis():
+        cancer = input.corr_cancer()
         query = input.corr_query().strip()
         data_type = input.corr_data_type()
+        normalized = input.corr_normalized()
 
         if not query:
             corr_results.set(pd.DataFrame({'error': ['Please enter genes or phosphosites']}))
             return
 
         try:
-            data = correlation_data()
-            if data is None:
-                corr_results.set(pd.DataFrame({'error': ['Failed to load cancer data']}))
-                return
+            # Load cancer data
+            if cancer == "brca":
+                data = cptac.Brca()
+            elif cancer == "coad":
+                data = cptac.Coad()
+            elif cancer == "hnscc":
+                data = cptac.Hnscc()
+            elif cancer == "luad":
+                data = cptac.Luad()
+            elif cancer == "ovarian":
+                data = cptac.Ovarian()
+            elif cancer == "ccrcc":
+                data = cptac.Ccrcc()
+            elif cancer == "gbm":
+                data = cptac.Gbm()
+            elif cancer == "lscc":
+                data = cptac.Lscc()
+            elif cancer == "pdac":
+                data = cptac.Pdac()
 
             # Parse query
             queries = [q.strip() for q in query.split(',') if q.strip()]
 
-            # Collect data
+            # Collect data based on data type
             all_data = []
             item_labels = []
 
-            if data_type in ['phospho', 'both'] and 'phospho' in data:
-                phospho = data['phospho']
+            if data_type in ['phospho', 'both']:
+                phospho = data.get_phosphoproteomics(source='harmonized')
+                if isinstance(phospho.columns, pd.MultiIndex):
+                    phospho = phospho.groupby(level=list(range(phospho.columns.nlevels)), axis=1).mean()
+                phospho = phospho.T
+
                 for q in queries:
                     if '_' in q or data_type == 'phospho':
                         matching = [idx for idx in phospho.index if q in str(idx)]
@@ -573,8 +507,12 @@ def server(input, output, session):
                             all_data.append(phospho.loc[site])
                             item_labels.append(str(site))
 
-            if data_type in ['proteomics', 'both'] and 'proteomics' in data:
-                proteomics = data['proteomics']
+            if data_type in ['proteomics', 'both']:
+                proteomics = data.get_proteomics()
+                if isinstance(proteomics.columns, pd.MultiIndex):
+                    proteomics = proteomics.groupby(level=list(range(proteomics.columns.nlevels)), axis=1).mean()
+                proteomics = proteomics.T
+
                 for q in queries:
                     if '_protein' in q or data_type == 'proteomics':
                         gene = q.replace('_protein', '')
@@ -597,7 +535,7 @@ def server(input, output, session):
             corr_matrix = data_matrix_tumor.corr(method='pearson')
 
             # Store for plotting
-            corr_data_store.set({
+            corr_data.set({
                 'matrix': corr_matrix,
                 'data': data_matrix,
                 'labels': item_labels
@@ -624,7 +562,7 @@ def server(input, output, session):
     @render.plot
     def corr_plot():
         results = corr_results.get()
-        data_dict = corr_data_store.get()
+        data_dict = corr_data.get()
 
         if results is None or data_dict is None or 'error' in results.columns:
             return None
