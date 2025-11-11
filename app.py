@@ -18,7 +18,7 @@ CANCER_TYPES = {
     "coad": "Colon Adenocarcinoma",
     "hnscc": "Head and Neck Squamous Cell Carcinoma",
     "luad": "Lung Adenocarcinoma",
-    "ovarian": "Ovarian Cancer",
+    "ov": "Ovarian Cancer",
     "ccrcc": "Clear Cell Renal Cell Carcinoma",
     "gbm": "Glioblastoma",
     "lscc": "Lung Squamous Cell Carcinoma",
@@ -47,11 +47,15 @@ app_ui = ui.page_navbar(
                     "Cancer Type:",
                     choices=CANCER_TYPES
                 ),
-                ui.input_text_area(
+                ui.input_selectize(
                     "protein_genes",
-                    "Gene Names (comma-separated):",
-                    placeholder="e.g., TP53, EGFR, KRAS",
-                    rows=3
+                    "Select Genes:",
+                    choices=[],
+                    multiple=True,
+                    options={
+                        "placeholder": "Start typing to search genes (e.g., TP53, EGFR)...",
+                        "maxItems": 50
+                    }
                 ),
                 ui.input_action_button("protein_run", "Run Analysis", class_="btn-primary"),
                 width=300
@@ -69,16 +73,20 @@ app_ui = ui.page_navbar(
                     "Cancer Type:",
                     choices=CANCER_TYPES
                 ),
-                ui.input_text_area(
-                    "phospho_query",
-                    "Phosphosites/Genes (comma-separated):",
-                    placeholder="e.g., EGFR_Y1068, TP53, AKT1_S473",
-                    rows=3
-                ),
                 ui.input_switch(
                     "phospho_normalized",
                     "Normalized (protein-adjusted)",
                     value=True
+                ),
+                ui.input_selectize(
+                    "phospho_query",
+                    "Select Phosphosites:",
+                    choices=[],
+                    multiple=True,
+                    options={
+                        "placeholder": "Start typing gene or phosphosite (e.g., EGFR_Y1068, TP53)...",
+                        "maxItems": 50
+                    }
                 ),
                 ui.input_action_button("phospho_run", "Run Analysis", class_="btn-primary"),
                 width=300
@@ -96,21 +104,25 @@ app_ui = ui.page_navbar(
                     "Cancer Type:",
                     choices=CANCER_TYPES
                 ),
-                ui.input_text_area(
-                    "corr_query",
-                    "Genes/Phosphosites (comma-separated):",
-                    placeholder="e.g., EGFR_Y1068, TP53, AKT1_S473",
-                    rows=3
-                ),
                 ui.input_select(
                     "corr_data_type",
                     "Data Type:",
-                    choices={"phospho": "Phosphoproteomics", "proteomics": "Proteomics", "both": "Both"}
+                    choices={"proteomics": "Proteomics", "phospho": "Phosphoproteomics", "both": "Both"}
                 ),
                 ui.input_switch(
                     "corr_normalized",
                     "Normalized Phospho (protein-adjusted)",
                     value=True
+                ),
+                ui.input_selectize(
+                    "corr_query",
+                    "Select Genes/Phosphosites:",
+                    choices=[],
+                    multiple=True,
+                    options={
+                        "placeholder": "Start typing to search...",
+                        "maxItems": 50
+                    }
                 ),
                 ui.input_action_button("corr_run", "Run Analysis", class_="btn-primary"),
                 width=300
@@ -139,7 +151,7 @@ def server(input, output, session):
             "coad": cptac.Coad,
             "hnscc": cptac.Hnscc,
             "luad": cptac.Luad,
-            "ovarian": cptac.Ovarian,
+            "ov": cptac.Ov,
             "ccrcc": cptac.Ccrcc,
             "gbm": cptac.Gbm,
             "lscc": cptac.Lscc,
@@ -304,6 +316,50 @@ def server(input, output, session):
             print(f"Error loading correlation data: {e}")
             return None
 
+    # ==================== Update Selectize Choices ====================
+
+    @reactive.Effect
+    def update_protein_gene_choices():
+        """Update gene choices when cancer type changes"""
+        data = protein_data()
+        if data is not None and not data.proteomics.empty:
+            genes = sorted([str(idx) for idx in data.proteomics.index])
+            ui.update_selectize("protein_genes", choices=genes)
+
+    @reactive.Effect
+    def update_phospho_choices():
+        """Update phosphosite choices when cancer type or normalization changes"""
+        data = phospho_data()
+        if data is not None:
+            # Get the appropriate phospho data
+            normalized = input.phospho_normalized()
+            phospho = data.phospho_normalized if normalized else data.phospho_unnormalized
+            if phospho.empty:
+                phospho = data.phospho_normalized if not normalized else data.phospho_unnormalized
+
+            if not phospho.empty:
+                # Format phosphosites as readable strings
+                phosphosites = sorted([str(idx) for idx in phospho.index])
+                ui.update_selectize("phospho_query", choices=phosphosites)
+
+    @reactive.Effect
+    def update_correlation_choices():
+        """Update choices when cancer type or data type changes"""
+        data = correlation_data()
+        if data is not None:
+            choices = []
+            data_type = input.corr_data_type()
+
+            if data_type in ['proteomics', 'both'] and 'proteomics' in data:
+                genes = [str(idx) for idx in data['proteomics'].index]
+                choices.extend(genes)
+
+            if data_type in ['phospho', 'both'] and 'phospho' in data:
+                phosphosites = [str(idx) for idx in data['phospho'].index]
+                choices.extend(phosphosites)
+
+            ui.update_selectize("corr_query", choices=sorted(set(choices)))
+
     # ==================== Protein Analysis ====================
 
     protein_results = reactive.Value(None)
@@ -311,7 +367,13 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.protein_run)
     def run_protein_analysis():
-        genes = [g.strip() for g in input.protein_genes().split(',') if g.strip()]
+        genes = input.protein_genes()
+
+        # Convert to list if needed
+        if isinstance(genes, str):
+            genes = [g.strip() for g in genes.split(',') if g.strip()]
+        elif not genes:
+            genes = []
 
         if not genes:
             protein_results.set(pd.DataFrame({'error': ['Please enter gene names']}))
@@ -423,11 +485,17 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.phospho_run)
     def run_phospho_analysis():
-        query = input.phospho_query().strip()
+        query = input.phospho_query()
         normalized = input.phospho_normalized()
 
-        if not query:
-            phospho_results.set(pd.DataFrame({'error': ['Please enter phosphosites or genes']}))
+        # Convert to list if needed
+        if isinstance(query, str):
+            queries = [q.strip() for q in query.split(',') if q.strip()]
+        else:
+            queries = list(query) if query else []
+
+        if not queries:
+            phospho_results.set(pd.DataFrame({'error': ['Please select phosphosites or genes']}))
             return
 
         try:
@@ -444,15 +512,16 @@ def server(input, output, session):
             paired_tumor = data.paired_tumor_samples
             paired_normal = data.paired_normal_samples
 
-            # Parse query
-            queries = [q.strip() for q in query.split(',') if q.strip()]
-
             results = []
             for q in queries:
-                # Find matching phosphosites
-                matching = [idx for idx in phospho.index if q in str(idx)]
+                # Try direct lookup first (from selectize selection)
+                if q in phospho.index:
+                    sites_to_process = [q]
+                else:
+                    # Fallback to substring matching for manual entry
+                    sites_to_process = [idx for idx in phospho.index if q in str(idx)][:25]
 
-                for site in matching[:25]:  # Limit to 25 sites per gene
+                for site in sites_to_process:
                     site_data = phospho.loc[site]
 
                     if len(paired_tumor) > 0:
@@ -544,11 +613,17 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.corr_run)
     def run_correlation_analysis():
-        query = input.corr_query().strip()
+        query = input.corr_query()
         data_type = input.corr_data_type()
 
-        if not query:
-            corr_results.set(pd.DataFrame({'error': ['Please enter genes or phosphosites']}))
+        # Convert to list if needed
+        if isinstance(query, str):
+            queries = [q.strip() for q in query.split(',') if q.strip()]
+        else:
+            queries = list(query) if query else []
+
+        if not queries:
+            corr_results.set(pd.DataFrame({'error': ['Please select genes or phosphosites']}))
             return
 
         try:
@@ -557,9 +632,6 @@ def server(input, output, session):
                 corr_results.set(pd.DataFrame({'error': ['Failed to load cancer data']}))
                 return
 
-            # Parse query
-            queries = [q.strip() for q in query.split(',') if q.strip()]
-
             # Collect data
             all_data = []
             item_labels = []
@@ -567,7 +639,12 @@ def server(input, output, session):
             if data_type in ['phospho', 'both'] and 'phospho' in data:
                 phospho = data['phospho']
                 for q in queries:
-                    if '_' in q or data_type == 'phospho':
+                    # Try direct lookup first (from selectize selection)
+                    if q in phospho.index:
+                        all_data.append(phospho.loc[q])
+                        item_labels.append(str(q))
+                    elif '_' in q or data_type == 'phospho':
+                        # Fallback to substring matching for manual entry
                         matching = [idx for idx in phospho.index if q in str(idx)]
                         for site in matching[:25]:
                             all_data.append(phospho.loc[site])
@@ -576,7 +653,12 @@ def server(input, output, session):
             if data_type in ['proteomics', 'both'] and 'proteomics' in data:
                 proteomics = data['proteomics']
                 for q in queries:
-                    if '_protein' in q or data_type == 'proteomics':
+                    # Try direct lookup first
+                    if q in proteomics.index:
+                        all_data.append(proteomics.loc[q])
+                        item_labels.append(str(q))
+                    elif '_protein' in q or data_type == 'proteomics':
+                        # Fallback to substring matching for manual entry
                         gene = q.replace('_protein', '')
                         if gene in proteomics.index:
                             all_data.append(proteomics.loc[gene])
