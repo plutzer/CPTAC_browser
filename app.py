@@ -11,6 +11,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 from typing import Tuple, List, Optional, Dict
 from dataclasses import dataclass
+import sys
+
+# Debug mode - set to True to see detailed error messages
+DEBUG = True
 
 # Available cancer types
 CANCER_TYPES = {
@@ -161,13 +165,30 @@ def server(input, output, session):
 
     def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         """Handle multi-index and transpose dataframe"""
+        if DEBUG:
+            print(f"[DEBUG] process_dataframe input type: {type(df)}, shape: {df.shape if hasattr(df, 'shape') else 'unknown'}", file=sys.stderr)
+
         if isinstance(df.columns, pd.MultiIndex):
+            if DEBUG:
+                print(f"[DEBUG] MultiIndex detected with {df.columns.nlevels} levels", file=sys.stderr)
             # Deduplicate multi-index columns by taking mean
-            df = df.groupby(level=list(range(df.columns.nlevels)), axis=1).mean()
-        # Ensure we have a proper DataFrame
+            # Use column names to group, then aggregate
+            level_names = list(range(df.columns.nlevels))
+            df = df.groupby(level=level_names, axis=1).mean()
+            if DEBUG:
+                print(f"[DEBUG] After groupby type: {type(df)}", file=sys.stderr)
+
+        # Ensure we have a proper DataFrame after groupby
         if not isinstance(df, pd.DataFrame):
+            if DEBUG:
+                print(f"[DEBUG] Converting {type(df)} to DataFrame", file=sys.stderr)
             df = pd.DataFrame(df)
-        return df.T
+
+        # Transpose so features are rows and samples are columns
+        result = df.T
+        if DEBUG:
+            print(f"[DEBUG] process_dataframe output type: {type(result)}, shape: {result.shape}", file=sys.stderr)
+        return result
 
     def load_phosphoproteomics(data) -> Optional[pd.DataFrame]:
         """Load phosphoproteomics data with fallback to multiple sources"""
@@ -187,11 +208,15 @@ def server(input, output, session):
 
         return None
 
-    def get_tumor_normal_pairs(columns: List[str]) -> Tuple[List[str], List[str], List[str], List[str]]:
+    def get_tumor_normal_pairs(columns) -> Tuple[List[str], List[str], List[str], List[str]]:
         """
         Extract all tumor/normal samples and paired samples.
         Returns: (all_tumor, all_normal, paired_tumor, paired_normal)
         """
+        # Ensure columns is a proper list
+        if not isinstance(columns, list):
+            columns = list(columns)
+
         all_normal = [col for col in columns if is_normal_sample(col)]
         all_tumor = [col for col in columns if not is_normal_sample(col)]
 
@@ -256,7 +281,7 @@ def server(input, output, session):
 
             # Get tumor/normal pairs
             all_tumor, all_normal, paired_tumor, paired_normal = get_tumor_normal_pairs(
-                proteomics.columns.tolist()
+                proteomics.columns
             )
 
             # For protein analysis, we don't need phospho data
@@ -270,7 +295,10 @@ def server(input, output, session):
                 paired_normal_samples=paired_normal
             )
         except Exception as e:
-            print(f"Error loading protein data: {e}")
+            print(f"Error loading protein data: {e}", file=sys.stderr)
+            if DEBUG:
+                import traceback
+                traceback.print_exc()
             return None
 
     @reactive.calc
@@ -301,7 +329,7 @@ def server(input, output, session):
 
             # Get tumor/normal pairs
             all_tumor, all_normal, paired_tumor, paired_normal = get_tumor_normal_pairs(
-                phospho_processed.columns.tolist()
+                phospho_processed.columns
             )
 
             return ProcessedData(
@@ -314,7 +342,10 @@ def server(input, output, session):
                 paired_normal_samples=paired_normal
             )
         except Exception as e:
-            print(f"Error loading phospho data: {e}")
+            print(f"Error loading phospho data: {e}", file=sys.stderr)
+            if DEBUG:
+                import traceback
+                traceback.print_exc()
             return None
 
     @reactive.calc
@@ -342,7 +373,10 @@ def server(input, output, session):
 
             return result
         except Exception as e:
-            print(f"Error loading correlation data: {e}")
+            print(f"Error loading correlation data: {e}", file=sys.stderr)
+            if DEBUG:
+                import traceback
+                traceback.print_exc()
             return None
 
     # ==================== Update Selectize Choices ====================
